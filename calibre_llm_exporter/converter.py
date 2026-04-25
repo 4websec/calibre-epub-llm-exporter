@@ -21,8 +21,16 @@ class SimpleMarkdownParser(HTMLParser):
     self.parts: list[str] = []
     self._link_stack: list[str] = []
     self._list_depth = 0
+    self._ordered_list_stack: list[int] = []
+    self._skip_depth = 0
 
   def handle_starttag(self, tag: str, attrs):
+    if tag in {'script', 'style', 'head'}:
+      self._skip_depth += 1
+      return
+    if self._skip_depth > 0:
+      return
+
     attrs_map = {k: v for k, v in attrs}
     if tag in {'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}:
       level = int(tag[1])
@@ -41,9 +49,16 @@ class SimpleMarkdownParser(HTMLParser):
       self.parts.append('\n```\n')
     elif tag == 'li':
       prefix = '  ' * max(0, self._list_depth - 1)
-      self.parts.append(f'\n{prefix}- ')
+      if self._ordered_list_stack:
+        index = self._ordered_list_stack[-1]
+        self.parts.append(f'\n{prefix}{index}. ')
+        self._ordered_list_stack[-1] = index + 1
+      else:
+        self.parts.append(f'\n{prefix}- ')
     elif tag in {'ul', 'ol'}:
       self._list_depth += 1
+      if tag == 'ol':
+        self._ordered_list_stack.append(1)
     elif tag == 'a':
       self._link_stack.append(attrs_map.get('href', '').strip())
       self.parts.append('[')
@@ -59,6 +74,12 @@ class SimpleMarkdownParser(HTMLParser):
       pass
 
   def handle_endtag(self, tag: str):
+    if tag in {'script', 'style', 'head'}:
+      self._skip_depth = max(0, self._skip_depth - 1)
+      return
+    if self._skip_depth > 0:
+      return
+
     if tag in {'strong', 'b'}:
       self.parts.append('**')
     elif tag in {'em', 'i'}:
@@ -69,6 +90,8 @@ class SimpleMarkdownParser(HTMLParser):
       self.parts.append('\n```\n')
     elif tag in {'ul', 'ol'}:
       self._list_depth = max(0, self._list_depth - 1)
+      if tag == 'ol' and self._ordered_list_stack:
+        self._ordered_list_stack.pop()
     elif tag in {'th', 'td'}:
       self.parts.append(' | ')
     elif tag == 'a':
@@ -76,6 +99,8 @@ class SimpleMarkdownParser(HTMLParser):
       self.parts.append(f']({href})' if href else ']')
 
   def handle_data(self, data: str):
+    if self._skip_depth > 0:
+      return
     cleaned = unescape(data)
     if cleaned.strip():
       self.parts.append(cleaned)
@@ -103,7 +128,7 @@ def html_to_markdown(html: str) -> str:
 def normalize_markdown(md: str) -> str:
   md = re.sub(r'\u00a0', ' ', md)
   md = re.sub(r'\n{3,}', '\n\n', md)
-  md = re.sub(r'[ \t]+', ' ', md)
+  md = re.sub(r'[ \t]+\n', '\n', md)
   return md.strip() + '\n'
 
 
@@ -162,6 +187,9 @@ def extract_spine_markdown(epub_path: Path) -> tuple[list[SpineItem], str, str, 
       chapter_title = _first_heading(markdown) or f'Chapter {len(items) + 1}'
       items.append(SpineItem(href=normalized_href, title=chapter_title, markdown=markdown))
 
+  if not items:
+    raise ValueError('No XHTML chapters found in EPUB spine')
+
   return items, title, language, authors
 
 
@@ -194,6 +222,8 @@ def build_records(
       chunk_id = f'{base_slug}/ch-{chapter_idx:03d}/ck-{chunk_idx:03d}'
       has_table = '|' in chunk.text and '\n| ' in chunk.text
       has_footnotes = bool(re.search(r'\[\^\d+\]|footnote', chunk.text, flags=re.IGNORECASE))
+      anchors = re.findall(r'(?m)^#{1,6}\s+(.+)$', chunk.text)
+      normalized_anchors = [_slug(anchor) for anchor in anchors if anchor.strip()]
 
       record = ChunkRecord(
         id=chunk_id,
@@ -211,7 +241,7 @@ def build_records(
         text_plain=re.sub(r'[#*_`\[\]()!>-]', '', chunk.text),
         has_table=has_table,
         has_footnotes=has_footnotes,
-        source=SourceRef(epub_href=item.href, anchors=[]),
+        source=SourceRef(epub_href=item.href, anchors=normalized_anchors),
       )
       records.append(record)
 

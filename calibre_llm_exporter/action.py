@@ -31,6 +31,7 @@ class EpubToLlmExporterAction(InterfaceAction):
 
     successes: list[str] = []
     failures: list[str] = []
+    failure_details: list[str] = []
 
     for book_id in selected_ids:
       try:
@@ -44,10 +45,12 @@ class EpubToLlmExporterAction(InterfaceAction):
         files = export_epub_for_llm(epub_path, output_dir, book_id=f'calibre:{book_id}')
         successes.append(f'{title} → {files["jsonl"]}')
       except Exception as exc:  # noqa: BLE001 - plugin boundary should never crash GUI
-        failures.append(f'Book {book_id}: {exc}')
+        msg = f'Book {book_id}: {exc}'
+        failures.append(msg)
+        failure_details.append(f'{msg}\n{traceback.format_exc()}')
 
     if failures:
-      details = '\n'.join(failures) + '\n\n' + traceback.format_exc()
+      details = '\n\n'.join(failure_details)
       error_dialog(
         self.gui,
         'EPUB → LLM export',
@@ -57,9 +60,12 @@ class EpubToLlmExporterAction(InterfaceAction):
       )
       return
 
+    summary = f'Exported {len(successes)} book(s).\n\n' + '\n'.join(successes[:15])
+    if len(successes) > 15:
+      summary += f'\n... and {len(successes) - 15} more'
     info_dialog(
       self.gui,
       'EPUB → LLM export',
-      f'Exported {len(successes)} book(s).\n\n' + '\n'.join(successes[:15]),
+      summary,
       show=True,
     )
